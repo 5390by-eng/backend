@@ -1,16 +1,23 @@
 import { createTasksFromMessage, OpenRouterError, SupabaseError } from "../services/taskCreation";
+import { notifyAssigneesAboutNewTasks } from "../services/taskNotifications";
 import {
 	answerCallbackQuery,
 	buildBoardsInlineKeyboard,
 	buildCreateBoardsInlineKeyboard,
+	buildStartKeyboard,
 	CREATE_TASKS_PROMPT_MESSAGE,
 	extractChatIdFromUpdate,
+	extractUsernameFromUpdate,
 	formatCreatedTasksList,
 	formatTasksList,
 	isCreateTasksCallback,
 	isGetBoardsCallback,
 	isStartCommand,
+	isToggleNotificationsCallback,
 	isValidWebhookSecret,
+	NOTIFY_SUBSCRIBED_MESSAGE,
+	NOTIFY_UNSUBSCRIBED_MESSAGE,
+	NOTIFY_USERNAME_REQUIRED_MESSAGE,
 	parseBoardCallbackData,
 	parseCreateBoardCallbackData,
 	SELECT_BOARD_FOR_TASKS_MESSAGE,
@@ -25,9 +32,11 @@ import {
 	consumeTelegramPending,
 	getAllBoards,
 	getBoardTasks,
+	getTelegramSubscription,
 	isValidUuid,
 	resolveSupabaseApiKey,
 	saveTelegramPendingText,
+	setTelegramSubscription,
 	startTelegramCreateFlow,
 	type SupabaseConfig,
 } from "../services/supabase";
@@ -199,11 +208,75 @@ async function handleCreateBoardSelection(
 		pending.messageText,
 	);
 
+	await notifyAssigneesAboutNewTasks(
+		supabaseConfig,
+		env.TELEGRAM_BOT_TOKEN,
+		board.title,
+		createdTasks,
+	);
+
 	await sendMessage(
 		botToken,
 		chatId,
 		formatCreatedTasksList(board.title, createdTasks),
 	);
+}
+
+async function handleToggleNotifications(
+	env: Env,
+	botToken: string,
+	chatId: number,
+	update: TelegramUpdate,
+	callbackQueryId: string,
+): Promise<void> {
+	await answerCallbackQuery(botToken, callbackQueryId);
+
+	const supabaseConfig = await resolveSupabaseConfigOrReply(env, botToken, chatId);
+	if (!supabaseConfig) {
+		return;
+	}
+
+	const currentSubscription = await getTelegramSubscription(supabaseConfig, chatId);
+	const nextSubscribed = !currentSubscription.isSubscribed;
+
+	if (nextSubscribed) {
+		const username = extractUsernameFromUpdate(update);
+		if (!username) {
+			await sendMessage(botToken, chatId, NOTIFY_USERNAME_REQUIRED_MESSAGE, {
+				replyMarkup: buildStartKeyboard(false),
+			});
+			return;
+		}
+
+		await setTelegramSubscription(supabaseConfig, chatId, username, true);
+		await sendMessage(
+			botToken,
+			chatId,
+			NOTIFY_SUBSCRIBED_MESSAGE.replace("{username}", username),
+			{ replyMarkup: buildStartKeyboard(true) },
+		);
+		return;
+	}
+
+	if (currentSubscription.username) {
+		await setTelegramSubscription(supabaseConfig, chatId, currentSubscription.username, false);
+	}
+
+	await sendMessage(botToken, chatId, NOTIFY_UNSUBSCRIBED_MESSAGE, {
+		replyMarkup: buildStartKeyboard(false),
+	});
+}
+
+async function handleStart(env: Env, botToken: string, chatId: number): Promise<void> {
+	const supabaseConfig = await resolveSupabaseConfigOrReply(env, botToken, chatId);
+	if (!supabaseConfig) {
+		return;
+	}
+
+	const subscription = await getTelegramSubscription(supabaseConfig, chatId);
+	await sendMessage(botToken, chatId, START_MESSAGE, {
+		replyMarkup: buildStartKeyboard(subscription.isSubscribed),
+	});
 }
 
 async function notifyCallbackError(botToken: string, chatId: number, message: string): Promise<void> {
@@ -285,10 +358,19 @@ export async function handleTelegram(request: Request, env: Env): Promise<Respon
 			return new Response("ok", { status: 200 });
 		}
 
+		if (isToggleNotificationsCallback(callbackData) && update.callback_query) {
+			await handleToggleNotifications(
+				env,
+				env.TELEGRAM_BOT_TOKEN,
+				chatId,
+				update,
+				update.callback_query.id,
+			);
+			return new Response("ok", { status: 200 });
+		}
+
 		if (isStartCommand(text)) {
-			await sendMessage(env.TELEGRAM_BOT_TOKEN, chatId, START_MESSAGE, {
-				replyMarkup: START_KEYBOARD,
-			});
+			await handleStart(env, env.TELEGRAM_BOT_TOKEN, chatId);
 			return new Response("ok", { status: 200 });
 		}
 

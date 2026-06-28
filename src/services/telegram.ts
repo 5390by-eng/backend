@@ -17,11 +17,14 @@ export interface TelegramChat {
 export interface TelegramMessage {
 	message_id: number;
 	chat: TelegramChat;
+	from?: TelegramUser;
 	text?: string;
 }
 
 export interface TelegramUser {
 	id: number;
+	username?: string;
+	first_name?: string;
 }
 
 export interface TelegramCallbackQuery {
@@ -52,8 +55,11 @@ export interface SendMessageOptions {
 
 export const GET_BOARDS_BUTTON_TEXT = "Получить Boards";
 export const CREATE_TASKS_BUTTON_TEXT = "Создание задач";
+export const NOTIFY_SUBSCRIBE_BUTTON_TEXT = "Получать уведомления";
+export const NOTIFY_UNSUBSCRIBE_BUTTON_TEXT = "Отключить уведомления";
 export const GET_BOARDS_CALLBACK = "get_boards";
 export const CREATE_TASKS_CALLBACK = "create_tasks";
+export const TOGGLE_NOTIFICATIONS_CALLBACK = "toggle_notifications";
 export const BOARD_CALLBACK_PREFIX = "board:";
 export const CREATE_BOARD_CALLBACK_PREFIX = "c:";
 export const SELECT_BOARD_MESSAGE = "Выберите доску:";
@@ -61,17 +67,35 @@ export const CREATE_TASKS_PROMPT_MESSAGE =
 	"Опишите задачу текстом — я разобью её на подзадачи и предложу выбрать доску для сохранения.";
 export const SELECT_BOARD_FOR_TASKS_MESSAGE = "Выберите доску, куда сохранить задачи:";
 
-export const START_KEYBOARD: InlineKeyboardMarkup = {
-	inline_keyboard: [
-		[{ text: GET_BOARDS_BUTTON_TEXT, callback_data: GET_BOARDS_CALLBACK }],
-		[{ text: CREATE_TASKS_BUTTON_TEXT, callback_data: CREATE_TASKS_CALLBACK }],
-	],
-};
+export function buildStartKeyboard(isSubscribed: boolean): InlineKeyboardMarkup {
+	return {
+		inline_keyboard: [
+			[{ text: GET_BOARDS_BUTTON_TEXT, callback_data: GET_BOARDS_CALLBACK }],
+			[{ text: CREATE_TASKS_BUTTON_TEXT, callback_data: CREATE_TASKS_CALLBACK }],
+			[
+				{
+					text: isSubscribed ? NOTIFY_UNSUBSCRIBE_BUTTON_TEXT : NOTIFY_SUBSCRIBE_BUTTON_TEXT,
+					callback_data: TOGGLE_NOTIFICATIONS_CALLBACK,
+				},
+			],
+		],
+	};
+}
+
+export const START_KEYBOARD: InlineKeyboardMarkup = buildStartKeyboard(false);
 
 export const GET_BOARDS_INLINE_KEYBOARD = START_KEYBOARD;
 
 export const START_MESSAGE =
-	"Привет! Выберите действие:\n• Получить Boards — список досок и задач\n• Создание задач — разбить текст на подзадачи и сохранить на доску";
+	"Привет! Выберите действие:\n• Получить Boards — список досок и задач\n• Создание задач — разбить текст на подзадачи и сохранить на доску\n• Получать уведомления — сообщения о новых назначенных задачах";
+
+export const NOTIFY_SUBSCRIBED_MESSAGE =
+	"Уведомления включены. Ваш username (@{username}) сохранён — вы будете получать сообщения, когда вам назначат задачу.";
+
+export const NOTIFY_UNSUBSCRIBED_MESSAGE = "Уведомления отключены.";
+
+export const NOTIFY_USERNAME_REQUIRED_MESSAGE =
+	"Чтобы получать уведомления, задайте username в настройках Telegram. Он должен совпадать с вашим именем исполнителя в приложении.";
 
 interface TelegramApiResponse {
 	ok?: boolean;
@@ -107,6 +131,20 @@ export function extractChatIdFromUpdate(update: TelegramUpdate): number | null {
 	return typeof chatId === "number" ? chatId : null;
 }
 
+export function extractTelegramUserFromUpdate(update: TelegramUpdate): TelegramUser | null {
+	return update.message?.from ?? update.callback_query?.from ?? null;
+}
+
+export function extractUsernameFromUpdate(update: TelegramUpdate): string | null {
+	const username = extractTelegramUserFromUpdate(update)?.username;
+	if (typeof username !== "string") {
+		return null;
+	}
+
+	const trimmed = username.trim().replace(/^@+/, "");
+	return trimmed.length > 0 ? trimmed : null;
+}
+
 export function isStartCommand(text: string | undefined): boolean {
 	return text?.trim().split(/\s+/)[0] === "/start";
 }
@@ -117,6 +155,10 @@ export function isGetBoardsCallback(data: string | undefined): boolean {
 
 export function isCreateTasksCallback(data: string | undefined): boolean {
 	return data === CREATE_TASKS_CALLBACK;
+}
+
+export function isToggleNotificationsCallback(data: string | undefined): boolean {
+	return data === TOGGLE_NOTIFICATIONS_CALLBACK;
 }
 
 export function buildBoardCallbackData(boardId: string): string {

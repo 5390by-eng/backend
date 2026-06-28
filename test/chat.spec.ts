@@ -34,6 +34,11 @@ const testEnv = {
 		"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.test.test",
 } as Env;
 
+const testEnvWithTelegram = {
+	...testEnv,
+	TELEGRAM_BOT_TOKEN: "123456789:ABCdefGHIjklMNOpqrsTUVwxyz",
+} as Env;
+
 function createChatRequest(body: unknown): Request {
 	return new IncomingRequest("http://example.com/api/chat", {
 		method: "POST",
@@ -46,12 +51,31 @@ function mockSupabaseRpc(
 	options: {
 		boardExists?: boolean;
 		members?: typeof MEMBER_1[];
+		subscribers?: Array<{ chat_id: number; username: string }>;
 	} = {},
 ) {
 	const members = options.members ?? [MEMBER_1, MEMBER_2];
 	const boardExists = options.boardExists ?? true;
+	const subscribers = options.subscribers ?? [];
 
 	return (url: string, init?: RequestInit) => {
+		if (url.includes("/rest/v1/rpc/chat_board_tasks")) {
+			return new Response(
+				JSON.stringify({
+					board_title: "boardtest1",
+					tasks: [],
+				}),
+				{ status: 200, headers: { "Content-Type": "application/json" } },
+			);
+		}
+
+		if (url.includes("/rest/v1/rpc/chat_telegram_find_subscribers")) {
+			return new Response(JSON.stringify(subscribers), {
+				status: 200,
+				headers: { "Content-Type": "application/json" },
+			});
+		}
+
 		if (url.includes("/rest/v1/rpc/chat_board_exists")) {
 			return new Response(JSON.stringify(boardExists), {
 				status: 200,
@@ -149,6 +173,45 @@ describe("POST /api/chat", () => {
 		});
 		expect(body[1].assignee.id).toBe(MEMBER_2.id);
 		expect(body[2].assignee.id).toBe(MEMBER_1.id);
+	});
+
+	it("sends Telegram notifications to subscribed assignees when bot token is configured", async () => {
+		const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+
+			if (url.includes("openrouter.ai")) {
+				return new Response(
+					JSON.stringify({
+						choices: [{ message: { content: '[{"task":"task1"}]' } }],
+					}),
+					{ status: 200, headers: { "Content-Type": "application/json" } },
+				);
+			}
+
+			if (url.includes("/sendMessage")) {
+				const body = JSON.parse(String(init?.body)) as { chat_id: number; text: string };
+				expect(body.chat_id).toBe(99);
+				expect(body.text).toContain("Вам назначена задача на доске «boardtest1»");
+				expect(body.text).toContain("task1");
+				return new Response(JSON.stringify({ ok: true }), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				});
+			}
+
+			const rpcResponse = mockSupabaseRpc({
+				subscribers: [{ chat_id: 99, username: "Person2" }],
+			})(url, init);
+			return rpcResponse ?? new Response(JSON.stringify({ message: "Unexpected request" }), { status: 500 });
+		});
+
+		const request = createChatRequest({ message: "Создать лендинг", boardId: BOARD_ID });
+		const ctx = createExecutionContext();
+		const response = await worker.fetch(request, testEnvWithTelegram, ctx);
+		await waitOnExecutionContext(ctx);
+
+		expect(response.status).toBe(200);
+		expect(fetchMock).toHaveBeenCalled();
 	});
 
 	it("returns 400 when message is empty", async () => {

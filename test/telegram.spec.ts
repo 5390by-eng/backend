@@ -29,6 +29,15 @@ const START_KEYBOARD = {
 	inline_keyboard: [
 		[{ text: "Получить Boards", callback_data: "get_boards" }],
 		[{ text: "Создание задач", callback_data: "create_tasks" }],
+		[{ text: "Получать уведомления", callback_data: "toggle_notifications" }],
+	],
+};
+
+const START_KEYBOARD_SUBSCRIBED = {
+	inline_keyboard: [
+		[{ text: "Получить Boards", callback_data: "get_boards" }],
+		[{ text: "Создание задач", callback_data: "create_tasks" }],
+		[{ text: "Отключить уведомления", callback_data: "toggle_notifications" }],
 	],
 };
 
@@ -93,12 +102,13 @@ function createMessageUpdate(text = "hello") {
 	};
 }
 
-function createCallbackUpdate(data: string) {
+function createCallbackUpdate(data: string, options: { username?: string } = {}) {
 	return {
 		update_id: 3,
 		callback_query: {
 			id: "callback-2",
 			data,
+			from: options.username ? { id: 42, username: options.username } : { id: 42 },
 			message: {
 				message_id: 12,
 				chat: { id: 42 },
@@ -123,6 +133,9 @@ function mockSupabaseRpc(
 		members?: typeof MEMBER_1[];
 		pendingId?: string;
 		pendingMessage?: string;
+		isSubscribed?: boolean;
+		subscriptionUsername?: string | null;
+		subscribers?: Array<{ chat_id: number; username: string }>;
 	} = {},
 ) {
 	const boards = options.boards ?? BOARDS;
@@ -130,8 +143,44 @@ function mockSupabaseRpc(
 	const members = options.members ?? [MEMBER_1, MEMBER_2];
 	const pendingId = options.pendingId ?? PENDING_ID;
 	const pendingMessage = options.pendingMessage ?? "Создать лендинг";
+	const isSubscribed = options.isSubscribed ?? false;
+	const subscriptionUsername = options.subscriptionUsername ?? null;
+	const subscribers = options.subscribers ?? [];
 
 	return (url: string, init?: RequestInit) => {
+		if (url.includes("/rest/v1/rpc/chat_telegram_get_subscription")) {
+			return new Response(
+				JSON.stringify({
+					isSubscribed,
+					username: subscriptionUsername,
+				}),
+				{ status: 200, headers: { "Content-Type": "application/json" } },
+			);
+		}
+
+		if (url.includes("/rest/v1/rpc/chat_telegram_set_subscription")) {
+			const payload = JSON.parse(String(init?.body)) as {
+				p_chat_id: number;
+				p_username: string;
+				p_subscribed: boolean;
+			};
+
+			return new Response(
+				JSON.stringify({
+					isSubscribed: payload.p_subscribed,
+					username: payload.p_username,
+				}),
+				{ status: 200, headers: { "Content-Type": "application/json" } },
+			);
+		}
+
+		if (url.includes("/rest/v1/rpc/chat_telegram_find_subscribers")) {
+			return new Response(JSON.stringify(subscribers), {
+				status: 200,
+				headers: { "Content-Type": "application/json" },
+			});
+		}
+
 		if (url.includes("/rest/v1/rpc/chat_list_boards")) {
 			return new Response(JSON.stringify(boards), {
 				status: 200,
@@ -236,11 +285,16 @@ describe("POST /telegram", () => {
 		const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
 			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
 
+			const rpcResponse = mockSupabaseRpc()(url, init);
+			if (rpcResponse) {
+				return rpcResponse;
+			}
+
 			expect(url).toBe(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`);
 			expect(init?.method).toBe("POST");
 			expect(JSON.parse(String(init?.body))).toEqual({
 				chat_id: 42,
-				text: "Привет! Выберите действие:\n• Получить Boards — список досок и задач\n• Создание задач — разбить текст на подзадачи и сохранить на доску",
+				text: "Привет! Выберите действие:\n• Получить Boards — список досок и задач\n• Создание задач — разбить текст на подзадачи и сохранить на доску\n• Получать уведомления — сообщения о новых назначенных задачах",
 				reply_markup: START_KEYBOARD,
 			});
 
@@ -257,7 +311,7 @@ describe("POST /telegram", () => {
 
 		expect(response.status).toBe(200);
 		expect(await response.text()).toBe("ok");
-		expect(fetchMock).toHaveBeenCalledTimes(1);
+		expect(fetchMock).toHaveBeenCalledTimes(2);
 	});
 
 	it("ignores unrelated messages without calling Telegram", async () => {
@@ -570,6 +624,145 @@ describe("POST /telegram", () => {
 				);
 			}
 
+			const rpcResponse = mockSupabaseRpc({
+				subscribers: [{ chat_id: 99, username: "Person2" }],
+			})(url, init);
+			if (rpcResponse) {
+				return rpcResponse;
+			}
+
+			if (url.endsWith("/answerCallbackQuery")) {
+				return new Response(JSON.stringify({ ok: true }), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				});
+			}
+
+			expect(url).toBe(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`);
+			const body = JSON.parse(String(init?.body)) as { chat_id: number; text: string };
+			if (body.chat_id === 99) {
+				expect(body.text).toContain("Вам назначена задача на доске «boardtest1»");
+				expect(body.text).toContain("task1");
+			} else {
+				expect(body.text).toContain("Создано 2 задач на доске «boardtest1»");
+				expect(body.text).toContain("task1 → Person2");
+				expect(body.text).toContain("task2 → Person1");
+			}
+
+			return new Response(JSON.stringify({ ok: true }), {
+				status: 200,
+				headers: { "Content-Type": "application/json" },
+			});
+		});
+
+		const request = createTelegramRequest(createCreateBoardCallbackUpdate(PENDING_ID, 0));
+		const ctx = createExecutionContext();
+		const response = await worker.fetch(request, testEnv, ctx);
+		await waitOnExecutionContext(ctx);
+
+		expect(response.status).toBe(200);
+		expect(await response.text()).toBe("ok");
+		expect(fetchMock).toHaveBeenCalled();
+	});
+
+	it("subscribes user to notifications when toggle button is pressed", async () => {
+		const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+
+			const rpcResponse = mockSupabaseRpc()(url, init);
+			if (rpcResponse) {
+				if (url.includes("/rest/v1/rpc/chat_telegram_set_subscription")) {
+					expect(JSON.parse(String(init?.body))).toEqual({
+						p_chat_id: 42,
+						p_username: "person2",
+						p_subscribed: true,
+					});
+				}
+				return rpcResponse;
+			}
+
+			if (url.endsWith("/answerCallbackQuery")) {
+				return new Response(JSON.stringify({ ok: true }), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				});
+			}
+
+			expect(url).toBe(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`);
+			expect(JSON.parse(String(init?.body))).toEqual({
+				chat_id: 42,
+				text: "Уведомления включены. Ваш username (@person2) сохранён — вы будете получать сообщения, когда вам назначат задачу.",
+				reply_markup: START_KEYBOARD_SUBSCRIBED,
+			});
+
+			return new Response(JSON.stringify({ ok: true }), {
+				status: 200,
+				headers: { "Content-Type": "application/json" },
+			});
+		});
+
+		const request = createTelegramRequest(createCallbackUpdate("toggle_notifications", { username: "person2" }));
+		const ctx = createExecutionContext();
+		const response = await worker.fetch(request, testEnv, ctx);
+		await waitOnExecutionContext(ctx);
+
+		expect(response.status).toBe(200);
+		expect(await response.text()).toBe("ok");
+		expect(fetchMock).toHaveBeenCalled();
+	});
+
+	it("unsubscribes user from notifications when already subscribed", async () => {
+		const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+
+			const rpcResponse = mockSupabaseRpc({
+				isSubscribed: true,
+				subscriptionUsername: "person2",
+			})(url, init);
+			if (rpcResponse) {
+				if (url.includes("/rest/v1/rpc/chat_telegram_set_subscription")) {
+					expect(JSON.parse(String(init?.body))).toEqual({
+						p_chat_id: 42,
+						p_username: "person2",
+						p_subscribed: false,
+					});
+				}
+				return rpcResponse;
+			}
+
+			if (url.endsWith("/answerCallbackQuery")) {
+				return new Response(JSON.stringify({ ok: true }), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				});
+			}
+
+			expect(url).toBe(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`);
+			expect(JSON.parse(String(init?.body))).toEqual({
+				chat_id: 42,
+				text: "Уведомления отключены.",
+				reply_markup: START_KEYBOARD,
+			});
+
+			return new Response(JSON.stringify({ ok: true }), {
+				status: 200,
+				headers: { "Content-Type": "application/json" },
+			});
+		});
+
+		const request = createTelegramRequest(createCallbackUpdate("toggle_notifications", { username: "person2" }));
+		const ctx = createExecutionContext();
+		const response = await worker.fetch(request, testEnv, ctx);
+		await waitOnExecutionContext(ctx);
+
+		expect(response.status).toBe(200);
+		expect(await response.text()).toBe("ok");
+	});
+
+	it("asks for Telegram username when subscribing without username", async () => {
+		const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+
 			const rpcResponse = mockSupabaseRpc()(url, init);
 			if (rpcResponse) {
 				return rpcResponse;
@@ -583,10 +776,11 @@ describe("POST /telegram", () => {
 			}
 
 			expect(url).toBe(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`);
-			const body = JSON.parse(String(init?.body)) as { text: string };
-			expect(body.text).toContain("Создано 2 задач на доске «boardtest1»");
-			expect(body.text).toContain("task1 → Person2");
-			expect(body.text).toContain("task2 → Person1");
+			expect(JSON.parse(String(init?.body))).toMatchObject({
+				chat_id: 42,
+				text: "Чтобы получать уведомления, задайте username в настройках Telegram. Он должен совпадать с вашим именем исполнителя в приложении.",
+				reply_markup: START_KEYBOARD,
+			});
 
 			return new Response(JSON.stringify({ ok: true }), {
 				status: 200,
@@ -594,7 +788,7 @@ describe("POST /telegram", () => {
 			});
 		});
 
-		const request = createTelegramRequest(createCreateBoardCallbackUpdate(PENDING_ID, 0));
+		const request = createTelegramRequest(createCallbackUpdate("toggle_notifications"));
 		const ctx = createExecutionContext();
 		const response = await worker.fetch(request, testEnv, ctx);
 		await waitOnExecutionContext(ctx);
@@ -649,7 +843,14 @@ describe("POST /telegram", () => {
 	});
 
 	it("returns 502 when Telegram API returns an error", async () => {
-		vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+		vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+
+			const rpcResponse = mockSupabaseRpc()(url, init);
+			if (rpcResponse) {
+				return rpcResponse;
+			}
+
 			return new Response(JSON.stringify({ ok: false, description: "Bad Request: chat not found" }), {
 				status: 400,
 				headers: { "Content-Type": "application/json" },

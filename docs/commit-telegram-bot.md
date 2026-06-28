@@ -6,6 +6,7 @@
 |--------|------|----------|
 | `6248218` | 28.06.2026 | Просмотр досок и задач через inline-кнопки |
 | `087962f` | 28.06.2026 | Сценарий **«Создание задач»** с отложенным выбором доски, pending в Supabase, общий сервис `taskCreation` |
+| — | 28.06.2026 | **Подписка на уведомления**: кнопка toggle, сохранение username, оповещение при назначении задач |
 
 ## Кратко
 
@@ -13,12 +14,23 @@ Telegram webhook-бот интегрирован с Supabase и OpenRouter. По
 
 - **Просматривать** доски и задачи через inline-кнопки
 - **Создавать задачи** из текста: сначала описание, затем выбор доски — бот разбивает текст на подзадачи и сохраняет их в БД
+- **Подписываться на уведомления** — бот сообщает о новых назначенных задачах (сопоставление по `assignee.name` = Telegram username)
 
 ### Сценарий просмотра
 
-1. `/start` — приветствие и inline-кнопки **«Получить Boards»** и **«Создание задач»**
+1. `/start` — приветствие и inline-кнопки **«Получить Boards»**, **«Создание задач»** и **«Получать уведомления»** / **«Отключить уведомления»**
 2. **«Получить Boards»** → «Выберите доску:» + кнопки досок
 3. Нажатие на доску → список задач с названием и статусом
+
+### Сценарий подписки на уведомления
+
+1. `/start` → **«Получать уведомления»**
+2. Бот сохраняет Telegram `username` и `chat_id` в Supabase
+3. При создании задачи (из Telegram или `POST /api/chat`) бот ищет подписчиков, у которых `username` совпадает с `assignee.name` (без учёта регистра)
+4. Подписанному пользователю приходит сообщение о новой задаче на доске
+5. Повторное нажатие (**«Отключить уведомления»**) отписывает пользователя
+
+> Для подписки нужен **username в Telegram**. Он должен совпадать с именем исполнителя в приложении (например, `Person2`).
 
 ### Сценарий создания задач
 
@@ -36,12 +48,15 @@ Telegram webhook-бот интегрирован с Supabase и OpenRouter. По
 
 | Файл | Назначение |
 |------|------------|
-| `src/routes/telegram.ts` | Webhook: `/start`, `get_boards`, `create_tasks`, `board:{uuid}`, `c:{pending32}:{index}` |
-| `src/routes/chat.ts` | HTTP `POST /api/chat` — делегирует в `createTasksFromMessage` |
+| `src/routes/telegram.ts` | Webhook: `/start`, `get_boards`, `create_tasks`, `toggle_notifications`, `board:{uuid}`, `c:{pending32}:{index}` |
+| `src/routes/chat.ts` | HTTP `POST /api/chat` — делегирует в `createTasksFromMessage`, отправляет Telegram-уведомления |
 | `src/services/telegram.ts` | Клавиатуры, парсеры callback, форматирование списков |
-| `src/services/supabase.ts` | RPC досок/задач + pending Telegram (`start`, `save`, `consume`) |
-| `src/services/taskCreation.ts` | **Новый.** Общая логика: decompose → round-robin → createTasks |
-| `test/telegram.spec.ts` | 16 интеграционных тестов (просмотр + создание) |
+| `src/services/supabase.ts` | RPC досок/задач + pending Telegram + подписки на уведомления |
+| `src/services/taskCreation.ts` | Общая логика: decompose → round-robin → createTasks |
+| `src/services/taskNotifications.ts` | **Новый.** Поиск подписчиков и отправка уведомлений о назначенных задачах |
+| `test/telegram.spec.ts` | Интеграционные тесты (просмотр + создание + подписки) |
+| `test/chat.spec.ts` | Тесты HTTP API, включая Telegram-уведомления |
+| `docs/supabase-telegram-subscriptions.sql` | SQL: таблица подписок и RPC |
 | `docs/commit-telegram-bot.md` | Документация |
 
 ## Supabase
@@ -57,6 +72,18 @@ Telegram webhook-бот интегрирован с Supabase и OpenRouter. По
 | `created_at` | `timestamptz` | Время создания |
 | `expires_at` | `timestamptz` | TTL (30 минут, продлевается при сохранении текста) |
 
+### Таблица `chat_telegram_subscriptions`
+
+| Поле | Тип | Описание |
+|------|-----|----------|
+| `chat_id` | `bigint` PK | Telegram chat ID |
+| `username` | `text` | Telegram username (без `@`) |
+| `is_subscribed` | `boolean` | Активна ли подписка |
+| `created_at` | `timestamptz` | Время создания |
+| `updated_at` | `timestamptz` | Время последнего изменения |
+
+SQL-миграция: [docs/supabase-telegram-subscriptions.sql](supabase-telegram-subscriptions.sql)
+
 ### RPC-функции
 
 | Функция | Назначение |
@@ -70,6 +97,10 @@ Telegram webhook-бот интегрирован с Supabase и OpenRouter. По
 | `chat_telegram_save_pending_text(p_chat_id, p_message_text)` | Сохранение текста, status=`awaiting_board` |
 | `chat_telegram_consume_pending(p_pending_id, p_chat_id)` | Атомарное чтение + удаление pending |
 | `chat_telegram_cleanup_pending()` | Удаление просроченных записей |
+| `chat_telegram_get_subscription(p_chat_id)` | Статус подписки пользователя |
+| `chat_telegram_set_subscription(p_chat_id, p_username, p_subscribed)` | Подписка / отписка |
+| `chat_telegram_find_subscribers(p_assignee_names)` | Chat ID подписчиков по именам исполнителей |
+| `chat_user_telegram_lookup(p_user_id)` | Telegram username и имя пользователя из `profiles` |
 
 > Прямой `GET /rest/v1/boards` с anon-ключом не используется — RLS блокирует чтение без авторизованного пользователя.
 
@@ -81,6 +112,7 @@ Telegram webhook-бот интегрирован с Supabase и OpenRouter. По
 |----------|--------|------------|
 | `get_boards` | `get_boards` | Показать доски для просмотра |
 | `create_tasks` | `create_tasks` | Начать сценарий создания |
+| `toggle_notifications` | `toggle_notifications` | Подписаться / отписаться от уведомлений |
 | `board:{uuid}` | `board:54589c21-…` | Задачи выбранной доски |
 | `c:{pending32}:{index}` | `c:a1b2c3d4…:0` | Создать задачи на доске с индексом `index` |
 
@@ -120,8 +152,35 @@ sequenceDiagram
     Worker->>Supabase: chat_telegram_consume_pending
     Worker->>OpenRouter: decomposeTask
     Worker->>Supabase: chat_create_tasks
+    Worker->>Supabase: chat_telegram_find_subscribers
+    Worker->>Service: sendMessage(уведомление исполнителю)
     Worker->>Service: sendMessage(итог)
     TG->>User: Созданные задачи
+```
+
+### Уведомления о назначенных задачах
+
+`notifyAssigneesAboutNewTasks` в `src/services/taskNotifications.ts` вызывается после `createTasksFromMessage`:
+
+1. Собрать уникальные `assignee.name` из созданных задач
+2. `chat_telegram_find_subscribers` — найти подписанных пользователей
+3. Отправить одно сообщение на `chat_id` с задачами, назначенными этому исполнителю
+
+Работает при создании задач из Telegram webhook и из `POST /api/chat` (если задан `TELEGRAM_BOT_TOKEN`).
+
+```mermaid
+sequenceDiagram
+    participant App as ChatOrTelegram
+    participant Worker as CloudflareWorker
+    participant Supabase as Supabase
+    participant TG as TelegramAPI
+    participant User as SubscribedUser
+
+    App->>Worker: createTasksFromMessage
+    Worker->>Supabase: chat_create_tasks
+    Worker->>Supabase: chat_telegram_find_subscribers
+    Worker->>TG: sendMessage(chat_id, новая задача)
+    TG->>User: Уведомление
 ```
 
 ### Общий сервис создания задач
@@ -178,16 +237,60 @@ sequenceDiagram
 
 | Тип | Условие | Действие |
 |-----|---------|----------|
-| `message` | `/start` | Приветствие + кнопки меню |
+| `message` | `/start` | Приветствие + кнопки меню (с учётом статуса подписки) |
 | `message` | текст (не `/команда`) | Pending + выбор доски (только если был `create_tasks`) |
 | `callback_query` | `get_boards` | Список досок |
 | `callback_query` | `create_tasks` | Запрос текста задачи |
+| `callback_query` | `toggle_notifications` | Подписка / отписка от уведомлений |
 | `callback_query` | `board:{uuid}` | Задачи доски |
 | `callback_query` | `c:{pending32}:{index}` | Создание задач на доске |
 
 ### `POST /api/chat`
 
-Без изменений контракта: `{ "message": "…", "boardId": "uuid" }` → массив созданных задач. Внутри использует тот же `createTasksFromMessage`.
+Контракт без изменений: `{ "message": "…", "boardId": "uuid" }` → массив созданных задач. Внутри использует `createTasksFromMessage` и при наличии `TELEGRAM_BOT_TOKEN` отправляет уведомления подписанным исполнителям.
+
+### `POST /api/notify-task`
+
+Уведомляет конкретного пользователя о задаче по его `userId`.
+
+**Тело запроса:**
+
+```json
+{
+  "userId": "uuid",
+  "task": "Название задачи",
+  "boardTitle": "Название доски"
+}
+```
+
+- `userId` — UUID пользователя из `profiles`
+- `task` — текст задачи (обязательно)
+- `boardTitle` — название доски (опционально, по умолчанию «Доска»)
+
+**Логика:**
+
+1. `chat_user_telegram_lookup` — получить `telegram_username` и `name` из профиля
+2. `chat_telegram_find_subscribers` — найти подписанного пользователя с совпадающим username
+3. Отправить сообщение в Telegram
+
+**Ответ при успехе:**
+
+```json
+{
+  "notified": true,
+  "chatId": 123456789,
+  "username": "person1"
+}
+```
+
+**Ошибки:**
+
+| Код | Причина |
+|-----|---------|
+| 400 | Невалидное тело запроса |
+| 404 | Пользователь не найден или не подписан на уведомления |
+| 500 | Не настроены `TELEGRAM_BOT_TOKEN` или Supabase |
+| 502 | Ошибка Telegram API |
 
 ## Переменные окружения
 
@@ -208,18 +311,25 @@ sequenceDiagram
 npm run deploy
 ```
 
+Перед деплоем примените SQL из [docs/supabase-telegram-subscriptions.sql](supabase-telegram-subscriptions.sql) в Supabase.
+
 Убедитесь, что `OPENROUTER_API_KEY` задан в secrets Worker — без него сценарий «Создание задач» вернёт «OpenRouter не настроен».
 
 ## Тесты
 
-`test/telegram.spec.ts` — 16 сценариев:
+`test/telegram.spec.ts` — сценарии просмотра, создания задач и подписок:
 
-- `/start` с двумя inline-кнопками
+- `/start` с тремя inline-кнопками (текст кнопки уведомлений зависит от подписки)
+- подписка / отписка через `toggle_notifications`
+- отказ подписки без Telegram username
+- уведомление подписанному исполнителю при создании задач
 - игнорирование текста без активного pending
 - `get_boards` → выбор доски → список задач
 - `create_tasks` → текст → выбор доски → создание задач
 - просроченный pending
 - webhook secret, JSON, HTTP-методы, env, ошибки Telegram API
+
+`test/chat.spec.ts` — уведомления через `POST /api/chat` при настроенном `TELEGRAM_BOT_TOKEN`.
 
 ```bash
 npm test
@@ -232,3 +342,5 @@ npm test
 - `edited_message` и прочие типы апдейтов игнорируются
 - Кнопки меню не показываются повторно после результатов
 - Pending TTL — 30 минут; повторное нажатие «Создание задач» заменяет предыдущий pending для того же chat
+- Уведомления только для пользователей с Telegram username, совпадающим с `assignee.name`
+- Ошибка отправки уведомления не блокирует создание задач (логируется в консоль Worker)

@@ -1,5 +1,6 @@
 import { createTasksFromMessage, OpenRouterError, SupabaseError } from "../services/taskCreation";
-import { isValidUuid, resolveSupabaseApiKey } from "../services/supabase";
+import { notifyAssigneesAboutNewTasks } from "../services/taskNotifications";
+import { getBoardTasks, isValidUuid, resolveSupabaseApiKey } from "../services/supabase";
 
 interface ChatRequestBody {
 	message?: unknown;
@@ -54,6 +55,16 @@ export async function handleChat(request: Request, env: Env): Promise<Response> 
 			boardId,
 			body.message.trim(),
 		);
+
+		if (env.TELEGRAM_BOT_TOKEN) {
+			const { boardTitle } = await getBoardTasks(supabaseConfig, boardId);
+			await notifyAssigneesAboutNewTasks(
+				supabaseConfig,
+				env.TELEGRAM_BOT_TOKEN,
+				boardTitle,
+				createdTasks,
+			);
+		}
 
 		return Response.json(createdTasks);
 	} catch (error) {

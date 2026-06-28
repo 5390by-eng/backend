@@ -13,6 +13,7 @@
 
 import { getAllowedOrigins, handlePreflight, withCors } from "./lib/cors";
 import { handleChat } from "./routes/chat";
+import { handleNotifyTask } from "./routes/notifyTask";
 import { handleTelegram } from "./routes/telegram";
 
 export default {
@@ -32,6 +33,19 @@ export default {
 
 			if (request.method === "POST") {
 				const response = await handleChat(request, env);
+				return withCors(response, request, allowed);
+			}
+		}
+
+		if (url.pathname === "/api/notify-task") {
+			const allowed = getAllowedOrigins(env);
+
+			if (request.method === "OPTIONS") {
+				return handlePreflight(request, allowed);
+			}
+
+			if (request.method === "POST") {
+				const response = await handleNotifyTask(request, env);
 				return withCors(response, request, allowed);
 			}
 		}

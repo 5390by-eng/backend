@@ -282,3 +282,111 @@ export async function consumeTelegramPending(
 		status: result.status ?? "awaiting_board",
 	};
 }
+
+export interface TelegramSubscription {
+	isSubscribed: boolean;
+	username: string | null;
+}
+
+export interface TelegramSubscriber {
+	chatId: number;
+	username: string;
+}
+
+export async function getTelegramSubscription(
+	config: SupabaseConfig,
+	chatId: number,
+): Promise<TelegramSubscription> {
+	const result = await supabaseRpc<{
+		isSubscribed?: boolean;
+		username?: string | null;
+	}>(config, "chat_telegram_get_subscription", {
+		p_chat_id: chatId,
+	});
+
+	return {
+		isSubscribed: result?.isSubscribed === true,
+		username: typeof result?.username === "string" ? result.username : null,
+	};
+}
+
+export async function setTelegramSubscription(
+	config: SupabaseConfig,
+	chatId: number,
+	username: string,
+	isSubscribed: boolean,
+): Promise<TelegramSubscription> {
+	const result = await supabaseRpc<{
+		isSubscribed?: boolean;
+		username?: string;
+	}>(config, "chat_telegram_set_subscription", {
+		p_chat_id: chatId,
+		p_username: username,
+		p_subscribed: isSubscribed,
+	});
+
+	return {
+		isSubscribed: result?.isSubscribed === true,
+		username: typeof result?.username === "string" ? result.username : username,
+	};
+}
+
+export async function findTelegramSubscribersByAssigneeNames(
+	config: SupabaseConfig,
+	assigneeNames: string[],
+): Promise<TelegramSubscriber[]> {
+	if (assigneeNames.length === 0) {
+		return [];
+	}
+
+	const subscribers = await supabaseRpc<Array<{ chat_id?: number; username?: string }>>(
+		config,
+		"chat_telegram_find_subscribers",
+		{
+			p_assignee_names: assigneeNames,
+		},
+	);
+
+	if (!Array.isArray(subscribers)) {
+		return [];
+	}
+
+	return subscribers
+		.filter(
+			(subscriber): subscriber is { chat_id: number; username: string } =>
+				typeof subscriber.chat_id === "number" && typeof subscriber.username === "string",
+		)
+		.map((subscriber) => ({
+			chatId: subscriber.chat_id,
+			username: subscriber.username,
+		}));
+}
+
+export interface UserTelegramLookup {
+	telegramUsername: string | null;
+	name: string;
+}
+
+export async function getUserTelegramLookup(
+	config: SupabaseConfig,
+	userId: string,
+): Promise<UserTelegramLookup | null> {
+	const result = await supabaseRpc<{
+		telegramUsername?: string | null;
+		name?: string | null;
+	} | null>(config, "chat_user_telegram_lookup", {
+		p_user_id: userId,
+	});
+
+	if (!result || typeof result.name !== "string") {
+		return null;
+	}
+
+	return {
+		telegramUsername:
+			typeof result.telegramUsername === "string" && result.telegramUsername.trim() !== ""
+				? result.telegramUsername
+				: null,
+		name: result.name,
+	};
+}

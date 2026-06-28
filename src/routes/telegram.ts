@@ -1,25 +1,35 @@
+import { createTasksFromMessage, OpenRouterError, SupabaseError } from "../services/taskCreation";
 import {
 	answerCallbackQuery,
 	buildBoardsInlineKeyboard,
+	buildCreateBoardsInlineKeyboard,
+	CREATE_TASKS_PROMPT_MESSAGE,
 	extractChatIdFromUpdate,
+	formatCreatedTasksList,
 	formatTasksList,
-	GET_BOARDS_INLINE_KEYBOARD,
+	isCreateTasksCallback,
 	isGetBoardsCallback,
 	isStartCommand,
 	isValidWebhookSecret,
 	parseBoardCallbackData,
+	parseCreateBoardCallbackData,
+	SELECT_BOARD_FOR_TASKS_MESSAGE,
 	SELECT_BOARD_MESSAGE,
 	sendMessage,
+	START_KEYBOARD,
 	START_MESSAGE,
 	TelegramError,
 	type TelegramUpdate,
 } from "../services/telegram";
 import {
+	consumeTelegramPending,
 	getAllBoards,
 	getBoardTasks,
 	isValidUuid,
 	resolveSupabaseApiKey,
-	SupabaseError,
+	saveTelegramPendingText,
+	startTelegramCreateFlow,
+	type SupabaseConfig,
 } from "../services/supabase";
 
 const WEBHOOK_SECRET_HEADER = "X-Telegram-Bot-Api-Secret-Token";
@@ -35,10 +45,10 @@ async function resolveSupabaseConfigOrReply(
 	env: Env,
 	botToken: string,
 	chatId: number,
-): Promise<{ url: string; apiKey: string } | null> {
+): Promise<SupabaseConfig | null> {
 	if (!env.SUPABASE_URL) {
 		await sendMessage(botToken, chatId, "Supabase не настроен.", {
-			replyMarkup: GET_BOARDS_INLINE_KEYBOARD,
+			replyMarkup: START_KEYBOARD,
 		});
 		return null;
 	}
@@ -48,7 +58,7 @@ async function resolveSupabaseConfigOrReply(
 	} catch (error) {
 		const message =
 			error instanceof SupabaseError ? error.message : "Некорректная конфигурация Supabase.";
-		await sendMessage(botToken, chatId, message, { replyMarkup: GET_BOARDS_INLINE_KEYBOARD });
+		await sendMessage(botToken, chatId, message, { replyMarkup: START_KEYBOARD });
 		return null;
 	}
 }
@@ -81,7 +91,7 @@ async function handleBoardSelection(
 
 	if (!isValidUuid(boardId)) {
 		await sendMessage(botToken, chatId, "Некорректная доска.", {
-			replyMarkup: GET_BOARDS_INLINE_KEYBOARD,
+			replyMarkup: START_KEYBOARD,
 		});
 		return;
 	}
@@ -93,6 +103,107 @@ async function handleBoardSelection(
 
 	const { boardTitle, tasks } = await getBoardTasks(supabaseConfig, boardId);
 	await sendMessage(botToken, chatId, formatTasksList(boardTitle, tasks));
+}
+
+async function handleCreateTasksStart(
+	env: Env,
+	botToken: string,
+	chatId: number,
+	callbackQueryId: string,
+): Promise<void> {
+	await answerCallbackQuery(botToken, callbackQueryId);
+
+	const supabaseConfig = await resolveSupabaseConfigOrReply(env, botToken, chatId);
+	if (!supabaseConfig) {
+		return;
+	}
+
+	await startTelegramCreateFlow(supabaseConfig, chatId);
+	await sendMessage(botToken, chatId, CREATE_TASKS_PROMPT_MESSAGE);
+}
+
+async function handleCreateTasksText(
+	env: Env,
+	botToken: string,
+	chatId: number,
+	text: string,
+): Promise<void> {
+	const supabaseConfig = await resolveSupabaseConfigOrReply(env, botToken, chatId);
+	if (!supabaseConfig) {
+		return;
+	}
+
+	let pendingId: string;
+	try {
+		pendingId = await saveTelegramPendingText(supabaseConfig, chatId, text.trim());
+	} catch (error) {
+		if (error instanceof SupabaseError && error.message.includes("No active pending request")) {
+			return;
+		}
+
+		throw error;
+	}
+
+	const boards = await getAllBoards(supabaseConfig);
+	if (boards.length === 0) {
+		await sendMessage(botToken, chatId, "Досок пока нет. Сначала создайте доску в приложении.");
+		return;
+	}
+
+	await sendMessage(botToken, chatId, SELECT_BOARD_FOR_TASKS_MESSAGE, {
+		replyMarkup: buildCreateBoardsInlineKeyboard(pendingId, boards),
+	});
+}
+
+async function handleCreateBoardSelection(
+	env: Env,
+	botToken: string,
+	chatId: number,
+	pendingId: string,
+	boardIndex: number,
+	callbackQueryId: string,
+): Promise<void> {
+	await answerCallbackQuery(botToken, callbackQueryId);
+
+	if (!env.OPENROUTER_API_KEY) {
+		await sendMessage(botToken, chatId, "OpenRouter не настроен.");
+		return;
+	}
+
+	const supabaseConfig = await resolveSupabaseConfigOrReply(env, botToken, chatId);
+	if (!supabaseConfig) {
+		return;
+	}
+
+	const boards = await getAllBoards(supabaseConfig);
+	const board = boards[boardIndex];
+	if (!board) {
+		await sendMessage(botToken, chatId, "Доска не найдена. Начните создание задач заново.", {
+			replyMarkup: START_KEYBOARD,
+		});
+		return;
+	}
+
+	const pending = await consumeTelegramPending(supabaseConfig, pendingId, chatId);
+	if (!pending) {
+		await sendMessage(botToken, chatId, "Запрос устарел или уже использован. Нажмите «Создание задач» снова.", {
+			replyMarkup: START_KEYBOARD,
+		});
+		return;
+	}
+
+	const createdTasks = await createTasksFromMessage(
+		supabaseConfig,
+		env.OPENROUTER_API_KEY,
+		board.id,
+		pending.messageText,
+	);
+
+	await sendMessage(
+		botToken,
+		chatId,
+		formatCreatedTasksList(board.title, createdTasks),
+	);
 }
 
 async function notifyCallbackError(botToken: string, chatId: number, message: string): Promise<void> {
@@ -137,8 +248,21 @@ export async function handleTelegram(request: Request, env: Env): Promise<Respon
 	const text = update.message?.text;
 	const callbackData = update.callback_query?.data;
 	const boardId = parseBoardCallbackData(callbackData);
+	const createBoardSelection = parseCreateBoardCallbackData(callbackData);
 
 	try {
+		if (createBoardSelection && update.callback_query) {
+			await handleCreateBoardSelection(
+				env,
+				env.TELEGRAM_BOT_TOKEN,
+				chatId,
+				createBoardSelection.pendingId,
+				createBoardSelection.boardIndex,
+				update.callback_query.id,
+			);
+			return new Response("ok", { status: 200 });
+		}
+
 		if (boardId && update.callback_query) {
 			await handleBoardSelection(
 				env,
@@ -150,6 +274,11 @@ export async function handleTelegram(request: Request, env: Env): Promise<Respon
 			return new Response("ok", { status: 200 });
 		}
 
+		if (isCreateTasksCallback(callbackData) && update.callback_query) {
+			await handleCreateTasksStart(env, env.TELEGRAM_BOT_TOKEN, chatId, update.callback_query.id);
+			return new Response("ok", { status: 200 });
+		}
+
 		if (isGetBoardsCallback(callbackData) && update.callback_query) {
 			await answerCallbackQuery(env.TELEGRAM_BOT_TOKEN, update.callback_query.id);
 			await handleGetBoards(env, env.TELEGRAM_BOT_TOKEN, chatId);
@@ -158,8 +287,13 @@ export async function handleTelegram(request: Request, env: Env): Promise<Respon
 
 		if (isStartCommand(text)) {
 			await sendMessage(env.TELEGRAM_BOT_TOKEN, chatId, START_MESSAGE, {
-				replyMarkup: GET_BOARDS_INLINE_KEYBOARD,
+				replyMarkup: START_KEYBOARD,
 			});
+			return new Response("ok", { status: 200 });
+		}
+
+		if (typeof text === "string" && text.trim() !== "" && !text.trim().startsWith("/")) {
+			await handleCreateTasksText(env, env.TELEGRAM_BOT_TOKEN, chatId, text);
 			return new Response("ok", { status: 200 });
 		}
 
@@ -183,11 +317,27 @@ export async function handleTelegram(request: Request, env: Env): Promise<Respon
 			return Response.json({ error: error.message }, { status });
 		}
 
+		if (error instanceof OpenRouterError || (error instanceof Error && error.name === "OpenRouterError")) {
+			if (chatId !== null) {
+				await notifyCallbackError(
+					env.TELEGRAM_BOT_TOKEN,
+					chatId,
+					"Не удалось разбить задачу. Попробуйте ещё раз.",
+				);
+			}
+			return Response.json({ error: error.message }, { status: 502 });
+		}
+
 		if (error instanceof SupabaseError || (error instanceof Error && error.name === "SupabaseError")) {
 			const status =
 				error instanceof SupabaseError && error.status >= 400 && error.status < 600
 					? error.status
 					: 502;
+
+			if (chatId !== null && update.callback_query) {
+				await notifyCallbackError(env.TELEGRAM_BOT_TOKEN, chatId, "Не удалось выполнить действие. Попробуйте ещё раз.");
+			}
+
 			return Response.json({ error: error.message }, { status });
 		}
 

@@ -216,3 +216,69 @@ export async function createTasks(
 
 	return Array.isArray(created) ? created : [];
 }
+
+export interface PendingTelegramRequest {
+	id: string;
+	chatId: number;
+	messageText: string;
+	status: string;
+}
+
+export async function startTelegramCreateFlow(
+	config: SupabaseConfig,
+	chatId: number,
+): Promise<string> {
+	const pendingId = await supabaseRpc<string>(config, "chat_telegram_start_create", {
+		p_chat_id: chatId,
+	});
+
+	if (typeof pendingId !== "string" || !isValidUuid(pendingId)) {
+		throw new SupabaseError("Failed to start Telegram create flow", 502);
+	}
+
+	return pendingId;
+}
+
+export async function saveTelegramPendingText(
+	config: SupabaseConfig,
+	chatId: number,
+	messageText: string,
+): Promise<string> {
+	const pendingId = await supabaseRpc<string>(config, "chat_telegram_save_pending_text", {
+		p_chat_id: chatId,
+		p_message_text: messageText,
+	});
+
+	if (typeof pendingId !== "string" || !isValidUuid(pendingId)) {
+		throw new SupabaseError("Failed to save pending Telegram request", 502);
+	}
+
+	return pendingId;
+}
+
+export async function consumeTelegramPending(
+	config: SupabaseConfig,
+	pendingId: string,
+	chatId: number,
+): Promise<PendingTelegramRequest | null> {
+	const result = await supabaseRpc<{
+		id?: string;
+		chatId?: number;
+		messageText?: string;
+		status?: string;
+	} | null>(config, "chat_telegram_consume_pending", {
+		p_pending_id: pendingId,
+		p_chat_id: chatId,
+	});
+
+	if (!result?.id || typeof result.messageText !== "string") {
+		return null;
+	}
+
+	return {
+		id: result.id,
+		chatId: result.chatId ?? chatId,
+		messageText: result.messageText,
+		status: result.status ?? "awaiting_board",
+	};
+}

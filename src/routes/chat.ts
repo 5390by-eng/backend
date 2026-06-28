@@ -1,14 +1,5 @@
-import { assignRoundRobin } from "../services/assignment";
-import { decomposeTask, OpenRouterError } from "../services/openrouter";
-import {
-	boardExists,
-	createTasks,
-	getBoardMembers,
-	isValidUuid,
-	resolveSupabaseApiKey,
-	SupabaseError,
-	type BoardMember,
-} from "../services/supabase";
+import { createTasksFromMessage, OpenRouterError, SupabaseError } from "../services/taskCreation";
+import { isValidUuid, resolveSupabaseApiKey } from "../services/supabase";
 
 interface ChatRequestBody {
 	message?: unknown;
@@ -57,31 +48,11 @@ export async function handleChat(request: Request, env: Env): Promise<Response> 
 	const boardId = body.boardId;
 
 	try {
-		const exists = await boardExists(supabaseConfig, boardId);
-		if (!exists) {
-			return Response.json({ error: "Board not found" }, { status: 404 });
-		}
-
-		const members = await getBoardMembers(supabaseConfig, boardId);
-		if (members.length === 0) {
-			return Response.json({ error: "Board has no members" }, { status: 404 });
-		}
-
-		const subtasks = await decomposeTask(env.OPENROUTER_API_KEY, body.message.trim());
-		const assignments = assignRoundRobin(
-			subtasks.map((subtask) => ({ title: subtask.task })),
-			members,
-		);
-
-		const createdTasks = await createTasks(
+		const createdTasks = await createTasksFromMessage(
 			supabaseConfig,
+			env.OPENROUTER_API_KEY,
 			boardId,
-			assignments.map((assignment, index) => ({
-				title: assignment.item.title,
-				assigneeId: assignment.assignee.id,
-				position: index,
-				assignee: assignment.assignee as BoardMember,
-			})),
+			body.message.trim(),
 		);
 
 		return Response.json(createdTasks);

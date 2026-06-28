@@ -51,17 +51,27 @@ export interface SendMessageOptions {
 }
 
 export const GET_BOARDS_BUTTON_TEXT = "Получить Boards";
+export const CREATE_TASKS_BUTTON_TEXT = "Создание задач";
 export const GET_BOARDS_CALLBACK = "get_boards";
+export const CREATE_TASKS_CALLBACK = "create_tasks";
 export const BOARD_CALLBACK_PREFIX = "board:";
+export const CREATE_BOARD_CALLBACK_PREFIX = "c:";
 export const SELECT_BOARD_MESSAGE = "Выберите доску:";
+export const CREATE_TASKS_PROMPT_MESSAGE =
+	"Опишите задачу текстом — я разобью её на подзадачи и предложу выбрать доску для сохранения.";
+export const SELECT_BOARD_FOR_TASKS_MESSAGE = "Выберите доску, куда сохранить задачи:";
 
-export const GET_BOARDS_KEYBOARD: InlineKeyboardMarkup = {
-	inline_keyboard: [[{ text: GET_BOARDS_BUTTON_TEXT, callback_data: GET_BOARDS_CALLBACK }]],
+export const START_KEYBOARD: InlineKeyboardMarkup = {
+	inline_keyboard: [
+		[{ text: GET_BOARDS_BUTTON_TEXT, callback_data: GET_BOARDS_CALLBACK }],
+		[{ text: CREATE_TASKS_BUTTON_TEXT, callback_data: CREATE_TASKS_CALLBACK }],
+	],
 };
 
-export const GET_BOARDS_INLINE_KEYBOARD = GET_BOARDS_KEYBOARD;
+export const GET_BOARDS_INLINE_KEYBOARD = START_KEYBOARD;
 
-export const START_MESSAGE = "Привет! Нажмите кнопку ниже, чтобы получить список досок.";
+export const START_MESSAGE =
+	"Привет! Выберите действие:\n• Получить Boards — список досок и задач\n• Создание задач — разбить текст на подзадачи и сохранить на доску";
 
 interface TelegramApiResponse {
 	ok?: boolean;
@@ -105,6 +115,10 @@ export function isGetBoardsCallback(data: string | undefined): boolean {
 	return data === GET_BOARDS_CALLBACK;
 }
 
+export function isCreateTasksCallback(data: string | undefined): boolean {
+	return data === CREATE_TASKS_CALLBACK;
+}
+
 export function buildBoardCallbackData(boardId: string): string {
 	return `${BOARD_CALLBACK_PREFIX}${boardId}`;
 }
@@ -118,12 +132,67 @@ export function parseBoardCallbackData(data: string | undefined): string | null 
 	return boardId.length > 0 ? boardId : null;
 }
 
+export function compactUuid(uuid: string): string {
+	return uuid.replace(/-/g, "");
+}
+
+export function expandCompactUuid(compact: string): string | null {
+	if (!/^[0-9a-f]{32}$/i.test(compact)) {
+		return null;
+	}
+
+	return `${compact.slice(0, 8)}-${compact.slice(8, 12)}-${compact.slice(12, 16)}-${compact.slice(16, 20)}-${compact.slice(20)}`;
+}
+
+export function buildCreateBoardCallbackData(pendingId: string, boardIndex: number): string {
+	return `${CREATE_BOARD_CALLBACK_PREFIX}${compactUuid(pendingId)}:${boardIndex}`;
+}
+
+export function parseCreateBoardCallbackData(
+	data: string | undefined,
+): { pendingId: string; boardIndex: number } | null {
+	if (!data?.startsWith(CREATE_BOARD_CALLBACK_PREFIX)) {
+		return null;
+	}
+
+	const payload = data.slice(CREATE_BOARD_CALLBACK_PREFIX.length);
+	const separatorIndex = payload.lastIndexOf(":");
+	if (separatorIndex <= 0) {
+		return null;
+	}
+
+	const compactPendingId = payload.slice(0, separatorIndex);
+	const boardIndexRaw = payload.slice(separatorIndex + 1);
+	const boardIndex = Number.parseInt(boardIndexRaw, 10);
+	const pendingId = expandCompactUuid(compactPendingId);
+
+	if (!pendingId || !Number.isInteger(boardIndex) || boardIndex < 0) {
+		return null;
+	}
+
+	return { pendingId, boardIndex };
+}
+
 export function buildBoardsInlineKeyboard(
 	boards: Array<{ id: string; title: string }>,
 ): InlineKeyboardMarkup {
 	return {
 		inline_keyboard: boards.map((board) => [
 			{ text: board.title, callback_data: buildBoardCallbackData(board.id) },
+		]),
+	};
+}
+
+export function buildCreateBoardsInlineKeyboard(
+	pendingId: string,
+	boards: Array<{ id: string; title: string }>,
+): InlineKeyboardMarkup {
+	return {
+		inline_keyboard: boards.map((board, index) => [
+			{
+				text: board.title,
+				callback_data: buildCreateBoardCallbackData(pendingId, index),
+			},
 		]),
 	};
 }
@@ -138,6 +207,20 @@ export function formatTasksList(
 
 	const lines = tasks.map((task, index) => `${index + 1}. ${task.title} (${task.status})`);
 	return `Задачи на доске «${boardTitle}»:\n\n${lines.join("\n\n")}`;
+}
+
+export function formatCreatedTasksList(
+	boardTitle: string,
+	tasks: Array<{ title: string; assignee: { name: string } }>,
+): string {
+	if (tasks.length === 0) {
+		return `На доске «${boardTitle}» не удалось создать задачи.`;
+	}
+
+	const lines = tasks.map(
+		(task, index) => `${index + 1}. ${task.title} → ${task.assignee.name}`,
+	);
+	return `Создано ${tasks.length} задач на доске «${boardTitle}»:\n\n${lines.join("\n\n")}`;
 }
 
 async function callTelegramApi(botToken: string, method: string, body: Record<string, unknown>): Promise<void> {

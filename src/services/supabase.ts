@@ -14,6 +14,24 @@ export interface BoardMember {
 	boardRole: string;
 }
 
+export interface Board {
+	id: string;
+	title: string;
+	description: string;
+}
+
+export interface BoardTask {
+	id: string;
+	title: string;
+	status: string;
+	priority: string;
+}
+
+export interface BoardTasksResult {
+	boardTitle: string;
+	tasks: BoardTask[];
+}
+
 export interface CreatedTask {
 	id: string;
 	title: string;
@@ -148,6 +166,23 @@ async function supabaseRpc<T>(config: SupabaseConfig, functionName: string, body
 	} catch {
 		throw new SupabaseError("Invalid JSON response from Supabase", response.status);
 	}
+}
+
+export async function getAllBoards(config: SupabaseConfig): Promise<Board[]> {
+	const boards = await supabaseRpc<Board[]>(config, "chat_list_boards", {});
+	return Array.isArray(boards) ? boards : [];
+}
+
+export async function getBoardTasks(config: SupabaseConfig, boardId: string): Promise<BoardTasksResult> {
+	const result = await supabaseRpc<{
+		board_title?: string | null;
+		tasks?: BoardTask[] | null;
+	}>(config, "chat_board_tasks", { p_board_id: boardId });
+
+	return {
+		boardTitle: result?.board_title ?? "Доска",
+		tasks: Array.isArray(result?.tasks) ? result.tasks : [],
+	};
 }
 
 export async function boardExists(config: SupabaseConfig, boardId: string): Promise<boolean> {

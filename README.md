@@ -11,6 +11,8 @@ Copy `.dev.vars.example` to `.dev.vars` and set:
 - `SUPABASE_ANON_KEY` — anon or publishable key (used by chat RPC functions)
 - `SUPABASE_SERVICE_ROLE_KEY` — optional secret/service role key
 - `ALLOWED_ORIGINS` — optional comma-separated CORS origins
+- `TELEGRAM_BOT_TOKEN` — Telegram Bot API token from [@BotFather](https://t.me/BotFather)
+- `TELEGRAM_WEBHOOK_SECRET` — secret token for webhook validation (`X-Telegram-Bot-Api-Secret-Token`)
 
 For production, set secrets with Wrangler:
 
@@ -20,6 +22,8 @@ wrangler secret put SUPABASE_URL
 wrangler secret put SUPABASE_ANON_KEY
 # optional:
 wrangler secret put SUPABASE_SERVICE_ROLE_KEY
+wrangler secret put TELEGRAM_BOT_TOKEN
+wrangler secret put TELEGRAM_WEBHOOK_SECRET
 ```
 
 ## API
@@ -55,6 +59,30 @@ Response:
   }
 ]
 ```
+
+### `POST /telegram`
+
+Telegram webhook endpoint. On every incoming message, replies with `"ok"` in the chat.
+
+Headers:
+
+- `X-Telegram-Bot-Api-Secret-Token` — must match `TELEGRAM_WEBHOOK_SECRET`
+
+Request body: standard Telegram `Update` JSON.
+
+Response: `200 ok` on success.
+
+#### Set webhook
+
+After deploy, register the webhook with Telegram (replace placeholders):
+
+```bash
+curl "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook" \
+  -d "url=https://<your-worker>.workers.dev/telegram" \
+  -d "secret_token=<TELEGRAM_WEBHOOK_SECRET>"
+```
+
+For local development, expose the worker with a tunnel (for example Cloudflare Tunnel or ngrok) and use that public URL in `setWebhook`.
 
 ## Development
 

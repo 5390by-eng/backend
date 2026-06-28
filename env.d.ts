@@ -4,4 +4,6 @@ interface __BaseEnv_Env {
 	SUPABASE_ANON_KEY: string;
 	SUPABASE_SERVICE_ROLE_KEY?: string;
 	ALLOWED_ORIGINS?: string;
+	TELEGRAM_BOT_TOKEN: string;
+	TELEGRAM_WEBHOOK_SECRET: string;
 }

@@ -4,3 +4,5 @@ SUPABASE_ANON_KEY=your_anon_or_publishable_key_here
 # Optional: service role / secret key if you prefer direct table access
 SUPABASE_SERVICE_ROLE_KEY=
 ALLOWED_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
+TELEGRAM_BOT_TOKEN=your_bot_token_here
+TELEGRAM_WEBHOOK_SECRET=your_webhook_secret_here

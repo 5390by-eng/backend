@@ -13,6 +13,7 @@
 
 import { getAllowedOrigins, handlePreflight, withCors } from "./lib/cors";
 import { handleChat } from "./routes/chat";
+import { handleTelegram } from "./routes/telegram";
 
 export default {
 	async fetch(request, env, ctx): Promise<Response> {
@@ -33,6 +34,10 @@ export default {
 				const response = await handleChat(request, env);
 				return withCors(response, request, allowed);
 			}
+		}
+
+		if (url.pathname === "/telegram") {
+			return handleTelegram(request, env);
 		}
 
 		return new Response("Hello World!");

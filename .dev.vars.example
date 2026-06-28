@@ -1,2 +1,6 @@
 OPENROUTER_API_KEY=your_key_here
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_ANON_KEY=your_anon_or_publishable_key_here
+# Optional: service role / secret key if you prefer direct table access
+SUPABASE_SERVICE_ROLE_KEY=
 ALLOWED_ORIGINS=http://localhost:5173,http://127.0.0.1:5173

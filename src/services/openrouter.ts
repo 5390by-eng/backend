@@ -93,7 +93,14 @@ export async function decomposeTask(apiKey: string, message: string): Promise<Ta
 		}),
 	});
 
-	const data = (await response.json()) as ChatCompletionResponse;
+	const rawBody = await response.text();
+	let data: ChatCompletionResponse;
+
+	try {
+		data = rawBody ? (JSON.parse(rawBody) as ChatCompletionResponse) : {};
+	} catch {
+		throw new OpenRouterError("Invalid response from OpenRouter", 502);
+	}
 
 	if (!response.ok) {
 		throw new OpenRouterError(

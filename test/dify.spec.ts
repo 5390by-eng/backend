@@ -118,7 +118,7 @@ describe("GET /knowledge-bases", () => {
 	it("returns 500 when DIFY_API_KEY is not configured", async () => {
 		const request = createKnowledgeBasesRequest();
 		const ctx = createExecutionContext();
-		const response = await worker.fetch(request, env, ctx);
+		const response = await worker.fetch(request, { ...env, DIFY_API_KEY: "" }, ctx);
 		await waitOnExecutionContext(ctx);
 
 		expect(response.status).toBe(500);

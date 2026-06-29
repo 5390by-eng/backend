@@ -9,6 +9,8 @@ import worker from "../src/index";
 const IncomingRequest = Request<unknown, IncomingRequestCfProperties>;
 
 const BOARD_ID = "4349e4fd-03df-4e56-8b29-b618dad9914f";
+const USER_ID = "7ed99ca8-7ac7-4f25-bc30-a9de1aef3719";
+const AUTH_TOKEN = "valid-token";
 const MEMBER_1 = {
 	id: "7ed99ca8-7ac7-4f25-bc30-a9de1aef3719",
 	name: "Person2",
@@ -39,12 +41,35 @@ const testEnvWithTelegram = {
 	TELEGRAM_BOT_TOKEN: "123456789:ABCdefGHIjklMNOpqrsTUVwxyz",
 } as Env;
 
-function createChatRequest(body: unknown): Request {
+function createChatRequest(body: unknown, options: { auth?: boolean } = {}): Request {
+	const headers: Record<string, string> = { "Content-Type": "application/json" };
+	if (options.auth !== false) {
+		headers.Authorization = `Bearer ${AUTH_TOKEN}`;
+	}
+
 	return new IncomingRequest("http://example.com/api/chat", {
 		method: "POST",
-		headers: { "Content-Type": "application/json" },
+		headers,
 		body: JSON.stringify(body),
 	});
+}
+
+function authUserResponse(): Response {
+	return new Response(JSON.stringify({ id: USER_ID, email: "user@example.com" }), {
+		status: 200,
+		headers: { "Content-Type": "application/json" },
+	});
+}
+
+function consumeAiSuccessResponse(): Response {
+	return new Response(JSON.stringify({ consumed: true, source: "plan" }), {
+		status: 200,
+		headers: { "Content-Type": "application/json" },
+	});
+}
+
+function resolveChatFetchUrl(input: RequestInfo | URL): string {
+	return typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
 }
 
 function mockSupabaseRpc(
@@ -52,13 +77,56 @@ function mockSupabaseRpc(
 		boardExists?: boolean;
 		members?: typeof MEMBER_1[];
 		subscribers?: Array<{ chat_id: number; username: string }>;
+		consumeAiRequest?: "success" | "quota_exceeded";
 	} = {},
 ) {
 	const members = options.members ?? [MEMBER_1, MEMBER_2];
 	const boardExists = options.boardExists ?? true;
 	const subscribers = options.subscribers ?? [];
+	const consumeAiRequest = options.consumeAiRequest ?? "success";
 
 	return (url: string, init?: RequestInit) => {
+		if (url.endsWith("/auth/v1/user")) {
+			return new Response(JSON.stringify({ id: USER_ID, email: "user@example.com" }), {
+				status: 200,
+				headers: { "Content-Type": "application/json" },
+			});
+		}
+
+		if (url.includes("/rest/v1/rpc/billing_consume_ai_request")) {
+			if (consumeAiRequest === "quota_exceeded") {
+				return new Response(
+					JSON.stringify({
+						code: "P0001",
+						message: "AI quota exceeded",
+					}),
+					{ status: 400, headers: { "Content-Type": "application/json" } },
+				);
+			}
+
+			return new Response(JSON.stringify({ consumed: true, source: "plan" }), {
+				status: 200,
+				headers: { "Content-Type": "application/json" },
+			});
+		}
+
+		if (url.includes("/rest/v1/rpc/chat_user_telegram_lookup")) {
+			const payload = JSON.parse(String(init?.body)) as { p_user_id: string };
+			const member = members.find((item) => item.id === payload.p_user_id);
+
+			return new Response(
+				JSON.stringify(
+					member
+						? {
+								telegramUsername: member.name === "Person2" ? "test_person2" : null,
+								name: member.name,
+							}
+						: null,
+				),
+				{ status: 200, headers: { "Content-Type": "application/json" } },
+			);
+		}
+
 		if (url.includes("/rest/v1/rpc/chat_board_tasks")) {
 			return new Response(
 				JSON.stringify({
@@ -70,7 +138,15 @@ function mockSupabaseRpc(
 		}
 
 		if (url.includes("/rest/v1/rpc/chat_telegram_find_subscribers")) {
-			return new Response(JSON.stringify(subscribers), {
+			const payload = JSON.parse(String(init?.body)) as { p_assignee_names: string[] };
+			const lookupNames = new Set(
+				payload.p_assignee_names.map((name) => name.trim().toLowerCase()).filter(Boolean),
+			);
+			const matched = subscribers.filter((subscriber) =>
+				lookupNames.has(subscriber.username.trim().toLowerCase()),
+			);
+
+			return new Response(JSON.stringify(matched), {
 				status: 200,
 				headers: { "Content-Type": "application/json" },
 			});
@@ -127,7 +203,11 @@ function mockSupabaseRpc(
 
 function mockOpenRouter(content: string) {
 	return vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
-		const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+		const url = resolveChatFetchUrl(input);
+
+		if (url.endsWith("/auth/v1/user")) {
+			return authUserResponse();
+		}
 
 		if (url.includes("openrouter.ai")) {
 			return new Response(
@@ -150,6 +230,43 @@ function mockOpenRouter(content: string) {
 describe("POST /api/chat", () => {
 	afterEach(() => {
 		vi.restoreAllMocks();
+	});
+
+	it("returns 401 when user is not authenticated", async () => {
+		const request = createChatRequest({ message: "Создать лендинг", boardId: BOARD_ID }, { auth: false });
+		const ctx = createExecutionContext();
+		const response = await worker.fetch(request, testEnv, ctx);
+		await waitOnExecutionContext(ctx);
+
+		expect(response.status).toBe(401);
+		expect(await response.json()).toEqual({ error: "Unauthorized" });
+	});
+
+	it("returns 403 when AI quota is exceeded", async () => {
+		vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+
+			if (url.endsWith("/auth/v1/user")) {
+				return new Response(JSON.stringify({ id: USER_ID, email: "user@example.com" }), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				});
+			}
+
+			const rpcResponse = mockSupabaseRpc({ consumeAiRequest: "quota_exceeded" })(url, init);
+			return rpcResponse ?? new Response(JSON.stringify({ message: "Unexpected request" }), { status: 500 });
+		});
+
+		const request = createChatRequest({ message: "Создать лендинг", boardId: BOARD_ID });
+		const ctx = createExecutionContext();
+		const response = await worker.fetch(request, testEnv, ctx);
+		await waitOnExecutionContext(ctx);
+
+		expect(response.status).toBe(403);
+		expect(await response.json()).toEqual({
+			error: "AI request quota exceeded. Purchase more requests on the Billing page.",
+			code: "AI_QUOTA_EXCEEDED",
+		});
 	});
 
 	it("returns created tasks with round-robin assignees", async () => {
@@ -177,7 +294,15 @@ describe("POST /api/chat", () => {
 
 	it("sends Telegram notifications to subscribed assignees when bot token is configured", async () => {
 		const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
-			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+			const url = resolveChatFetchUrl(input);
+
+			if (url.endsWith("/auth/v1/user")) {
+				return authUserResponse();
+			}
+
+			if (url.includes("/rest/v1/rpc/billing_consume_ai_request")) {
+				return consumeAiSuccessResponse();
+			}
 
 			if (url.includes("openrouter.ai")) {
 				return new Response(
@@ -200,7 +325,7 @@ describe("POST /api/chat", () => {
 			}
 
 			const rpcResponse = mockSupabaseRpc({
-				subscribers: [{ chat_id: 99, username: "Person2" }],
+				subscribers: [{ chat_id: 99, username: "test_person2" }],
 			})(url, init);
 			return rpcResponse ?? new Response(JSON.stringify({ message: "Unexpected request" }), { status: 500 });
 		});
@@ -249,7 +374,13 @@ describe("POST /api/chat", () => {
 
 	it("returns 404 when board is not found", async () => {
 		vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
-			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+			const url = resolveChatFetchUrl(input);
+			if (url.endsWith("/auth/v1/user")) {
+				return authUserResponse();
+			}
+			if (url.includes("/rest/v1/rpc/billing_consume_ai_request")) {
+				return consumeAiSuccessResponse();
+			}
 			const rpcResponse = mockSupabaseRpc({ boardExists: false })(url, init);
 			return rpcResponse ?? new Response(JSON.stringify({ message: "Unexpected request" }), { status: 500 });
 		});
@@ -265,7 +396,13 @@ describe("POST /api/chat", () => {
 
 	it("returns 404 when board has no members", async () => {
 		vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
-			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+			const url = resolveChatFetchUrl(input);
+			if (url.endsWith("/auth/v1/user")) {
+				return authUserResponse();
+			}
+			if (url.includes("/rest/v1/rpc/billing_consume_ai_request")) {
+				return consumeAiSuccessResponse();
+			}
 			const rpcResponse = mockSupabaseRpc({ members: [] })(url, init);
 			return rpcResponse ?? new Response(JSON.stringify({ message: "Unexpected request" }), { status: 500 });
 		});
@@ -295,7 +432,15 @@ describe("POST /api/chat", () => {
 
 	it("returns 502 when OpenRouter returns an error", async () => {
 		vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
-			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+			const url = resolveChatFetchUrl(input);
+
+			if (url.endsWith("/auth/v1/user")) {
+				return authUserResponse();
+			}
+
+			if (url.includes("/rest/v1/rpc/billing_consume_ai_request")) {
+				return consumeAiSuccessResponse();
+			}
 
 			if (url.includes("openrouter.ai")) {
 				return new Response(JSON.stringify({ error: { message: "Rate limit exceeded" } }), {

@@ -29,6 +29,20 @@ function mockSuccessfulChatFetch(content: string) {
 	return vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
 		const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
 
+		if (url.endsWith("/auth/v1/user")) {
+			return new Response(JSON.stringify({ id: MEMBER.id, email: MEMBER.email }), {
+				status: 200,
+				headers: { "Content-Type": "application/json" },
+			});
+		}
+
+		if (url.includes("/rest/v1/rpc/billing_consume_ai_request")) {
+			return new Response(JSON.stringify({ consumed: true, source: "plan" }), {
+				status: 200,
+				headers: { "Content-Type": "application/json" },
+			});
+		}
+
 		if (url.includes("openrouter.ai")) {
 			return new Response(
 				JSON.stringify({
@@ -115,6 +129,7 @@ describe("CORS /api/chat", () => {
 			headers: {
 				Origin: "http://localhost:5173",
 				"Content-Type": "application/json",
+				Authorization: "Bearer valid-token",
 			},
 			body: JSON.stringify({ message: "Привет", boardId: BOARD_ID }),
 		});
@@ -164,6 +179,7 @@ describe("CORS /api/chat", () => {
 			headers: {
 				Origin: "http://evil.example.com",
 				"Content-Type": "application/json",
+				Authorization: "Bearer valid-token",
 			},
 			body: JSON.stringify({ message: "Привет", boardId: BOARD_ID }),
 		});

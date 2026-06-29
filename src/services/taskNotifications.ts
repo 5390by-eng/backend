@@ -7,10 +7,6 @@ import {
 	SupabaseError,
 } from "./supabase";
 
-function normalizeName(value: string): string {
-	return value.trim().toLowerCase();
-}
-
 export function formatTaskAssignedNotification(
 	boardTitle: string,
 	tasks: Array<{ title: string }>,
@@ -33,42 +29,28 @@ export async function notifyAssigneesAboutNewTasks(
 		return;
 	}
 
-	const assigneeNames = [...new Set(tasks.map((task) => task.assignee.name))];
-	const subscribers = await findTelegramSubscribersByAssigneeNames(config, assigneeNames);
-	if (subscribers.length === 0) {
-		return;
-	}
-
-	const tasksByAssignee = new Map<string, CreatedTask[]>();
+	const tasksByAssigneeId = new Map<string, CreatedTask[]>();
 	for (const task of tasks) {
-		const key = normalizeName(task.assignee.name);
-		const existing = tasksByAssignee.get(key) ?? [];
+		const existing = tasksByAssigneeId.get(task.assignee.id) ?? [];
 		existing.push(task);
-		tasksByAssignee.set(key, existing);
+		tasksByAssigneeId.set(task.assignee.id, existing);
 	}
 
-	const notifiedChatIds = new Set<number>();
-
-	for (const subscriber of subscribers) {
-		if (notifiedChatIds.has(subscriber.chatId)) {
-			continue;
-		}
-
-		const matchedTasks = tasksByAssignee.get(normalizeName(subscriber.username));
-		if (!matchedTasks || matchedTasks.length === 0) {
-			continue;
-		}
-
-		notifiedChatIds.add(subscriber.chatId);
-
+	for (const [assigneeId, assigneeTasks] of tasksByAssigneeId) {
 		try {
-			await sendMessage(
+			await notifyUserAboutTasksByUserId(
+				config,
 				botToken,
-				subscriber.chatId,
-				formatTaskAssignedNotification(boardTitle, matchedTasks),
+				assigneeId,
+				boardTitle,
+				assigneeTasks,
 			);
 		} catch (error) {
-			console.error("Failed to send task notification to Telegram chat", subscriber.chatId, error);
+			if (error instanceof SupabaseError && error.status === 404) {
+				continue;
+			}
+
+			console.error("Failed to notify assignee about new tasks", assigneeId, error);
 		}
 	}
 }
@@ -79,22 +61,21 @@ export interface NotifyUserResult {
 	username: string;
 }
 
-export async function notifyUserAboutTaskByUserId(
+async function notifyUserAboutTasksByUserId(
 	config: SupabaseConfig,
 	botToken: string,
 	userId: string,
 	boardTitle: string,
-	taskTitle: string,
+	tasks: Array<{ title: string }>,
 ): Promise<NotifyUserResult> {
 	const profile = await getUserTelegramLookup(config, userId);
 	if (!profile) {
 		throw new SupabaseError("User not found", 404);
 	}
 
-	const lookupNames = [
-		profile.telegramUsername,
-		profile.name,
-	].filter((value): value is string => typeof value === "string" && value.trim() !== "");
+	const lookupNames = [profile.telegramUsername, profile.name].filter(
+		(value): value is string => typeof value === "string" && value.trim() !== "",
+	);
 
 	if (lookupNames.length === 0) {
 		throw new SupabaseError("User has no Telegram username or display name", 404);
@@ -110,7 +91,7 @@ export async function notifyUserAboutTaskByUserId(
 	await sendMessage(
 		botToken,
 		subscriber.chatId,
-		formatTaskAssignedNotification(boardTitle, [{ title: taskTitle }]),
+		formatTaskAssignedNotification(boardTitle, tasks),
 	);
 
 	return {
@@ -118,4 +99,14 @@ export async function notifyUserAboutTaskByUserId(
 		chatId: subscriber.chatId,
 		username: subscriber.username,
 	};
+}
+
+export async function notifyUserAboutTaskByUserId(
+	config: SupabaseConfig,
+	botToken: string,
+	userId: string,
+	boardTitle: string,
+	taskTitle: string,
+): Promise<NotifyUserResult> {
+	return notifyUserAboutTasksByUserId(config, botToken, userId, boardTitle, [{ title: taskTitle }]);
 }

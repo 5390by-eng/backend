@@ -1,5 +1,7 @@
+import { getAuthenticatedUser } from "../lib/auth";
 import { createTasksFromMessage, OpenRouterError, SupabaseError } from "../services/taskCreation";
 import { notifyAssigneesAboutNewTasks } from "../services/taskNotifications";
+import { consumeAiRequest } from "../services/billing";
 import { getBoardTasks, isValidUuid, resolveSupabaseApiKey } from "../services/supabase";
 
 interface ChatRequestBody {
@@ -32,6 +34,11 @@ export async function handleChat(request: Request, env: Env): Promise<Response> 
 		return Response.json({ error: "Supabase is not configured" }, { status: 500 });
 	}
 
+	const user = await getAuthenticatedUser(request, env);
+	if (!user) {
+		return Response.json({ error: "Unauthorized" }, { status: 401 });
+	}
+
 	let supabaseConfig: { url: string; apiKey: string };
 	try {
 		supabaseConfig = {
@@ -49,6 +56,25 @@ export async function handleChat(request: Request, env: Env): Promise<Response> 
 	const boardId = body.boardId;
 
 	try {
+		try {
+			await consumeAiRequest(env, user.id);
+		} catch (error) {
+			if (error instanceof SupabaseError) {
+				const message = error.message.toLowerCase();
+				if (message.includes("quota exceeded") || message.includes("ai quota")) {
+					return Response.json(
+						{
+							error: "AI request quota exceeded. Purchase more requests on the Billing page.",
+							code: "AI_QUOTA_EXCEEDED",
+						},
+						{ status: 403 },
+					);
+				}
+			}
+
+			throw error;
+		}
+
 		const createdTasks = await createTasksFromMessage(
 			supabaseConfig,
 			env.OPENROUTER_API_KEY,

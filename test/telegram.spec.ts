@@ -136,6 +136,7 @@ function mockSupabaseRpc(
 		isSubscribed?: boolean;
 		subscriptionUsername?: string | null;
 		subscribers?: Array<{ chat_id: number; username: string }>;
+		userTelegramLookup?: Record<string, { telegramUsername: string | null; name: string }>;
 	} = {},
 ) {
 	const boards = options.boards ?? BOARDS;
@@ -146,8 +147,27 @@ function mockSupabaseRpc(
 	const isSubscribed = options.isSubscribed ?? false;
 	const subscriptionUsername = options.subscriptionUsername ?? null;
 	const subscribers = options.subscribers ?? [];
+	const userTelegramLookup = options.userTelegramLookup ?? Object.fromEntries(
+		members.map((member) => [
+			member.id,
+			{
+				telegramUsername: member.name === "Person2" ? "test_person2" : null,
+				name: member.name,
+			},
+		]),
+	);
 
 	return (url: string, init?: RequestInit) => {
+		if (url.includes("/rest/v1/rpc/chat_user_telegram_lookup")) {
+			const payload = JSON.parse(String(init?.body)) as { p_user_id: string };
+			const profile = userTelegramLookup[payload.p_user_id] ?? null;
+
+			return new Response(JSON.stringify(profile), {
+				status: 200,
+				headers: { "Content-Type": "application/json" },
+			});
+		}
+
 		if (url.includes("/rest/v1/rpc/chat_telegram_get_subscription")) {
 			return new Response(
 				JSON.stringify({
@@ -175,7 +195,15 @@ function mockSupabaseRpc(
 		}
 
 		if (url.includes("/rest/v1/rpc/chat_telegram_find_subscribers")) {
-			return new Response(JSON.stringify(subscribers), {
+			const payload = JSON.parse(String(init?.body)) as { p_assignee_names: string[] };
+			const lookupNames = new Set(
+				payload.p_assignee_names.map((name) => name.trim().toLowerCase()).filter(Boolean),
+			);
+			const matched = subscribers.filter((subscriber) =>
+				lookupNames.has(subscriber.username.trim().toLowerCase()),
+			);
+
+			return new Response(JSON.stringify(matched), {
 				status: 200,
 				headers: { "Content-Type": "application/json" },
 			});
@@ -625,7 +653,7 @@ describe("POST /telegram", () => {
 			}
 
 			const rpcResponse = mockSupabaseRpc({
-				subscribers: [{ chat_id: 99, username: "Person2" }],
+				subscribers: [{ chat_id: 99, username: "test_person2" }],
 			})(url, init);
 			if (rpcResponse) {
 				return rpcResponse;

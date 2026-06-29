@@ -6,4 +6,13 @@ interface __BaseEnv_Env {
 	ALLOWED_ORIGINS?: string;
 	TELEGRAM_BOT_TOKEN: string;
 	TELEGRAM_WEBHOOK_SECRET: string;
+	STRIPE_SECRET_KEY: string;
+	STRIPE_WEBHOOK_SECRET: string;
+	STRIPE_PRICE_PRO: string;
+	STRIPE_PRICE_TEAM: string;
+	APP_BASE_URL?: string;
+	STRIPE_AI_TOPUP_MIN_USD?: string;
+	STRIPE_AI_TOPUP_MAX_USD?: string;
+	DIFY_API_KEY: string;
+	DIFY_API_BASE_URL?: string;
 }

@@ -36,7 +36,7 @@ function mockNotifyTaskRpc(options: {
 			: { telegramUsername: "person1", name: "Person1" };
 	const subscribers = options.subscribers ?? [{ chat_id: 99, username: "person1" }];
 
-	return (url: string) => {
+	return (url: string, init?: RequestInit) => {
 		if (url.includes("/rest/v1/rpc/chat_user_telegram_lookup")) {
 			if (!profile) {
 				return new Response(JSON.stringify(null), {
@@ -52,7 +52,15 @@ function mockNotifyTaskRpc(options: {
 		}
 
 		if (url.includes("/rest/v1/rpc/chat_telegram_find_subscribers")) {
-			return new Response(JSON.stringify(subscribers), {
+			const payload = JSON.parse(String(init?.body)) as { p_assignee_names: string[] };
+			const lookupNames = new Set(
+				payload.p_assignee_names.map((name) => name.trim().toLowerCase()).filter(Boolean),
+			);
+			const matched = subscribers.filter((subscriber) =>
+				lookupNames.has(subscriber.username.trim().toLowerCase()),
+			);
+
+			return new Response(JSON.stringify(matched), {
 				status: 200,
 				headers: { "Content-Type": "application/json" },
 			});
@@ -71,7 +79,7 @@ describe("POST /api/notify-task", () => {
 		const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
 			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
 
-			const rpcResponse = mockNotifyTaskRpc()(url);
+			const rpcResponse = mockNotifyTaskRpc()(url, init);
 			if (rpcResponse) {
 				return rpcResponse;
 			}
@@ -107,9 +115,9 @@ describe("POST /api/notify-task", () => {
 	});
 
 	it("returns 404 when user is not found", async () => {
-		vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+		vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
 			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-			const rpcResponse = mockNotifyTaskRpc({ profile: null })(url);
+			const rpcResponse = mockNotifyTaskRpc({ profile: null })(url, init);
 			return rpcResponse ?? new Response(JSON.stringify({ message: "Unexpected request" }), { status: 500 });
 		});
 
@@ -126,9 +134,9 @@ describe("POST /api/notify-task", () => {
 	});
 
 	it("returns 404 when user is not subscribed", async () => {
-		vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+		vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
 			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-			const rpcResponse = mockNotifyTaskRpc({ subscribers: [] })(url);
+			const rpcResponse = mockNotifyTaskRpc({ subscribers: [] })(url, init);
 			return rpcResponse ?? new Response(JSON.stringify({ message: "Unexpected request" }), { status: 500 });
 		});
 

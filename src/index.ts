@@ -14,6 +14,9 @@
 import { getAllowedOrigins, handlePreflight, withCors } from "./lib/cors";
 import { handleChat } from "./routes/chat";
 import { handleNotifyTask } from "./routes/notifyTask";
+import { handleBillingAiTopupCheckoutSession, handleBillingCheckoutSession, handleBillingPlans, handleBillingPortal, handleBillingSubscription, handleBillingUsage } from "./routes/billing";
+import { handleKnowledgeBases } from "./routes/dify";
+import { handleStripeWebhook } from "./routes/stripe";
 import { handleTelegram } from "./routes/telegram";
 
 export default {
@@ -52,6 +55,93 @@ export default {
 
 		if (url.pathname === "/telegram") {
 			return handleTelegram(request, env);
+		}
+
+		if (url.pathname === "/stripe/webhook") {
+			return handleStripeWebhook(request, env);
+		}
+
+		if (url.pathname === "/api/billing/subscription") {
+			const allowed = getAllowedOrigins(env);
+
+			if (request.method === "OPTIONS") {
+				return handlePreflight(request, allowed);
+			}
+
+			const response = await handleBillingSubscription(request, env);
+			return withCors(response, request, allowed);
+		}
+
+		if (url.pathname === "/api/billing/usage") {
+			const allowed = getAllowedOrigins(env);
+
+			if (request.method === "OPTIONS") {
+				return handlePreflight(request, allowed);
+			}
+
+			const response = await handleBillingUsage(request, env);
+			return withCors(response, request, allowed);
+		}
+
+		if (url.pathname === "/api/billing/plans") {
+			const allowed = getAllowedOrigins(env);
+
+			if (request.method === "OPTIONS") {
+				return handlePreflight(request, allowed);
+			}
+
+			const response = await handleBillingPlans(request, env);
+			return withCors(response, request, allowed);
+		}
+
+		if (url.pathname === "/api/billing/checkout-session") {
+			const allowed = getAllowedOrigins(env);
+
+			if (request.method === "OPTIONS") {
+				return handlePreflight(request, allowed);
+			}
+
+			if (request.method === "POST") {
+				const response = await handleBillingCheckoutSession(request, env);
+				return withCors(response, request, allowed);
+			}
+		}
+
+		if (url.pathname === "/api/billing/portal") {
+			const allowed = getAllowedOrigins(env);
+
+			if (request.method === "OPTIONS") {
+				return handlePreflight(request, allowed);
+			}
+
+			if (request.method === "POST") {
+				const response = await handleBillingPortal(request, env);
+				return withCors(response, request, allowed);
+			}
+		}
+
+		if (url.pathname === "/api/billing/ai-topup-checkout-session") {
+			const allowed = getAllowedOrigins(env);
+
+			if (request.method === "OPTIONS") {
+				return handlePreflight(request, allowed);
+			}
+
+			if (request.method === "POST") {
+				const response = await handleBillingAiTopupCheckoutSession(request, env);
+				return withCors(response, request, allowed);
+			}
+		}
+
+		if (url.pathname === "/knowledge-bases") {
+			const allowed = getAllowedOrigins(env);
+
+			if (request.method === "OPTIONS") {
+				return handlePreflight(request, allowed);
+			}
+
+			const response = await handleKnowledgeBases(request, env);
+			return withCors(response, request, allowed);
 		}
 
 		return new Response("Hello World!");

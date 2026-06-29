@@ -6,3 +6,13 @@ SUPABASE_SERVICE_ROLE_KEY=
 ALLOWED_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
 TELEGRAM_BOT_TOKEN=your_bot_token_here
 TELEGRAM_WEBHOOK_SECRET=your_webhook_secret_here
+STRIPE_SECRET_KEY=sk_test_your_key_here
+STRIPE_WEBHOOK_SECRET=whsec_your_webhook_secret_here
+STRIPE_PRICE_PRO=price_pro_monthly_id
+STRIPE_PRICE_TEAM=price_team_monthly_id
+APP_BASE_URL=http://localhost:5173
+STRIPE_AI_TOPUP_MIN_USD=0.5
+STRIPE_AI_TOPUP_MAX_USD=500
+DIFY_API_KEY=your_dify_api_key_here
+# Optional: defaults to https://api.dify.ai/v1
+DIFY_API_BASE_URL=
